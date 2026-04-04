@@ -1,0 +1,31 @@
+# Image is built from upstream Dockerfile (same ref as build_9routerimg.sh):
+#   https://github.com/decolua/9router — tag v0.3.47
+#
+#   docker compose build           # (re)build image
+#   docker compose up -d --build   # build then run
+#
+# Optional .env next to this file (required: false).
+
+name: 9router
+
+services:
+  9router:
+    build:
+      context: https://github.com/decolua/9router.git#v0.3.47
+    image: 9router
+    container_name: 9router
+    restart: unless-stopped
+    ports:
+      - "20128:20128"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      INITIAL_PASSWORD: "123abc@!"
+    volumes:
+      - 9router-data:/app/data
+      - 9router-usage:/root/.9router
+
+volumes:
+  9router-data:
+  9router-usage:
