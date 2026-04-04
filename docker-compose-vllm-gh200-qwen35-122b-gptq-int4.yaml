@@ -1,0 +1,125 @@
+# Qwen3.5-122B-A10B-GPTQ-Int4 + vLLM on NVIDIA GH200 (Grace Hopper Superchip, linux/arm64 + CUDA).
+# Model card: https://huggingface.co/Qwen/Qwen3.5-122B-A10B-GPTQ-Int4
+#
+# This variant is GPTQ 4-bit; vLLM expects `--quantization moe_wna16` (see model card “Serving Qwen3.5 → vLLM”).
+# GH200 sizing: still a large MoE with long native context. The Hugging Face vLLM example uses tensor
+# parallel 4 on a 4-GPU host — set `VLLM_TENSOR_PARALLEL_SIZE` in `.env` to match the number of GPUs the
+# container sees (`gpus: all` still reports one device per physical GPU). Default here is 1 so single-GPU
+# nodes do not hit “World size > available GPUs”. Multi-GPU: e.g. `VLLM_TENSOR_PARALLEL_SIZE=4`.
+#
+# Prerequisites: recent NVIDIA driver, NVIDIA Container Toolkit, Docker with GPU support; run from repo root
+# so `.env` and `./vllm-models` resolve. `platform: linux/arm64` matches GH200 userland.
+#
+# Build + run:
+#   docker compose -f docker-compose-vllm-gh200-qwen35-122b-gptq-int4.yaml build vllm
+#   docker compose -f docker-compose-vllm-gh200-qwen35-122b-gptq-int4.yaml up -d
+#
+# Example .env (tensor parallel must equal visible GPU count):
+#   VLLM_TENSOR_PARALLEL_SIZE=1
+#   # or on 4 GPUs: VLLM_TENSOR_PARALLEL_SIZE=4
+#   VLLM_MAX_MODEL_LEN=131072
+#   VLLM_GPU_MEMORY_UTILIZATION=0.88
+#
+# Memory tuning: https://docs.vllm.ai/en/latest/configuration/conserving_memory/
+#
+# Image: Dockerfile.vllm-openai-qwen35 on vllm/vllm-openai (Transformers 5.x for Qwen3.5 MoE). Override
+# VLLM_BASE_IMAGE / skip build with VLLM_IMAGE if you use a pre-built image.
+#
+# Env: VLLM_TENSOR_PARALLEL_SIZE (default 1), VLLM_MAX_MODEL_LEN (default 131072), VLLM_GPU_MEMORY_UTILIZATION
+# (default 0.88), VLLM_HOST_PORT (default 8000), VLLM_TOKENIZER (default: same dir as weights — see below).
+# PYTORCH_ALLOC_CONF set by default. Repo-root .env: HF_TOKEN, VLLM_* — loaded via env_file.
+#
+# Default serve uses --language-model-only (HF model card): text/chat only, skips vision encoder and
+# avoids loading preprocessor_config.json. For image/video, remove that flag and use a full snapshot
+# (including preprocessor_config.json / vision assets); re-run model-download if those files are missing.
+#
+# We omit --reasoning-parser qwen3: with --language-model-only (and some Qwen3.5 tokenizers), vLLM can
+# raise "Qwen3ReasoningParser ... could not locate think start/end tokens". Thinking still works in the
+# model output; use client `chat_template_kwargs` / HF guidance for enable_thinking. To try API reasoning
+# split again, add `--reasoning-parser` `qwen3` after upgrading vLLM or serving without --language-model-only.
+#
+# Tool calling: --enable-auto-tool-choice and --tool-call-parser qwen3_coder. Use --tokenizer that matches
+# the GPTQ weights (default: local snapshot path). If tokenizer.json was never downloaded, model-download
+# only fetched weights — run `docker compose ... run --rm model-download` again or `scripts/check-qwen35-gptq-snapshot.py`.
+# Override VLLM_TOKENIZER (e.g. Hub id) only if you must.
+
+services:
+  model-download:
+    platform: linux/arm64
+    image: python:3.12-slim
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./vllm-models:/models
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python -m pip install -q --no-cache-dir huggingface_hub hf_transfer
+        export HF_HUB_ENABLE_HF_TRANSFER=1
+        REPO="Qwen/Qwen3.5-122B-A10B-GPTQ-Int4"
+        DIR="/models/Qwen3.5-122B-A10B-GPTQ-Int4"
+        if [ ! -f "$$DIR/config.json" ]; then
+          echo "Downloading $$REPO (very large, one-time full snapshot)..."
+          python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$$REPO', local_dir='$$DIR', local_dir_use_symlinks=False)"
+        elif [ ! -f "$$DIR/tokenizer.json" ] || [ ! -f "$$DIR/tokenizer_config.json" ] || [ ! -f "$$DIR/vocab.json" ]; then
+          echo "Config present but tokenizer files missing; fetching tokenizer.json, tokenizer_config.json, vocab.json only..."
+          python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$$REPO', local_dir='$$DIR', local_dir_use_symlinks=False, allow_patterns=['tokenizer.json','tokenizer_config.json','vocab.json'])"
+        else
+          echo "Model dir has config and tokenizer assets; nothing to download."
+        fi
+    restart: "no"
+
+  vllm:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm-openai-qwen35
+      args:
+        VLLM_BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai:latest}
+        TRANSFORMERS_VERSION: ${TRANSFORMERS_VERSION:-5.5.0}
+        HUGGINGFACE_HUB_VERSION: ${HUGGINGFACE_HUB_VERSION:-1.8.0}
+    image: ${VLLM_IMAGE:-vllm-openai-qwen35:latest}
+    container_name: vllm-qwen35-122b-gptq-int4
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      model-download:
+        condition: service_completed_successfully
+    volumes:
+      - ./vllm-models:/models
+    environment:
+      - HF_HOME=/models/.cache/huggingface
+      - PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:True}
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
+    ipc: host
+    shm_size: 16gb
+    gpus: all
+    command:
+      - "/models/Qwen3.5-122B-A10B-GPTQ-Int4"
+      - "--tokenizer"
+      - "${VLLM_TOKENIZER:-/models/Qwen3.5-122B-A10B-GPTQ-Int4}"
+      - "--trust-remote-code"
+      - "--served-model-name"
+      - "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--tensor-parallel-size"
+      - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
+      - "--max-model-len"
+      - "${VLLM_MAX_MODEL_LEN:-131072}"
+      - "--quantization"
+      - "moe_wna16"
+      - "--gpu-memory-utilization"
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.88}"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_coder"
+      - "--language-model-only"
+    restart: unless-stopped

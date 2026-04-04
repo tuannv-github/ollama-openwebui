@@ -1,0 +1,97 @@
+# Qwen3.5-35B-A3B + vLLM (MoE). Model card:
+#   https://huggingface.co/Qwen/Qwen3.5-35B-A3B
+#
+# Platform: linux/arm64 (aarch64 + NVIDIA, e.g. GH200). Builds Dockerfile.vllm-openai-qwen35 on vllm/vllm-openai
+# so Transformers 5.x is installed (Qwen3.5 MoE tokenizers; stock image: KeyError: Qwen3_5MoeConfig).
+#
+# Build + run:
+#   docker compose -f docker-compose-vllm-gh200-qwen35-35b.yaml build vllm
+#   docker compose -f docker-compose-vllm-gh200-qwen35-35b.yaml up -d
+#
+# HF vLLM example uses --tensor-parallel-size 8 and --max-model-len 262144 for long context; tune
+# VLLM_TENSOR_PARALLEL_SIZE / VLLM_MAX_MODEL_LEN for your GPUs. OOM tips:
+#   https://docs.vllm.ai/en/latest/configuration/conserving_memory/
+#
+# Env: VLLM_TENSOR_PARALLEL_SIZE (default 1), VLLM_MAX_MODEL_LEN (default 131072), VLLM_GPU_MEMORY_UTILIZATION
+# (default 0.90), VLLM_HOST_PORT (host port mapped to 8000, default 8000). PYTORCH_ALLOC_CONF set by default.
+# Repo-root .env (gitignored): HF_TOKEN=..., VLLM_* overrides. Loaded via env_file.
+#
+# Text-only default: --language-model-only (see model card). Remove for vision; ensure full snapshot including
+# preprocessor_config.json if needed.
+#
+# Thinking: Qwen3.5 uses thinking by default; --reasoning-parser qwen3 matches HF’s vLLM recipe. Clients can
+# disable per request with chat_template_kwargs enable_thinking false (see model card).
+
+services:
+  model-download:
+    platform: linux/arm64
+    image: python:3.12-slim
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./vllm-models:/models
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python -m pip install -q --no-cache-dir huggingface_hub hf_transfer
+        export HF_HUB_ENABLE_HF_TRANSFER=1
+        if [ -f /models/Qwen3.5-35B-A3B/config.json ]; then
+          echo "Model already present; skipping download."
+          exit 0
+        fi
+        echo "Downloading Qwen/Qwen3.5-35B-A3B (large, one-time)..."
+        python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qwen/Qwen3.5-35B-A3B', local_dir='/models/Qwen3.5-35B-A3B', local_dir_use_symlinks=False)"
+    restart: "no"
+
+  vllm:
+    platform: linux/arm64
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm-openai-qwen35
+      args:
+        VLLM_BASE_IMAGE: ${VLLM_BASE_IMAGE:-vllm/vllm-openai:latest}
+        TRANSFORMERS_VERSION: ${TRANSFORMERS_VERSION:-5.5.0}
+        HUGGINGFACE_HUB_VERSION: ${HUGGINGFACE_HUB_VERSION:-1.8.0}
+    image: ${VLLM_IMAGE:-vllm-openai-qwen35:latest}
+    container_name: vllm-qwen35-35b
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      model-download:
+        condition: service_completed_successfully
+    volumes:
+      - ./vllm-models:/models
+    environment:
+      - HF_HOME=/models/.cache/huggingface
+      - PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:True}
+    ports:
+      - "${VLLM_HOST_PORT:-8000}:8000"
+    ipc: host
+    shm_size: 16gb
+    gpus: all
+    command:
+      - "/models/Qwen3.5-35B-A3B"
+      - "--trust-remote-code"
+      - "--served-model-name"
+      - "Qwen/Qwen3.5-35B-A3B"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--tensor-parallel-size"
+      - "${VLLM_TENSOR_PARALLEL_SIZE:-1}"
+      - "--max-model-len"
+      - "${VLLM_MAX_MODEL_LEN:-131072}"
+      - "--reasoning-parser"
+      - "qwen3"
+      - "--gpu-memory-utilization"
+      - "${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_coder"
+      - "--language-model-only"
+    restart: unless-stopped

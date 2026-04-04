@@ -1,4 +1,5 @@
-ollama
+.git
 open-webui
+ollama
 vllm-models
-.env
+**/*.md

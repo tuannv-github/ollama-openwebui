@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Extend official vllm/vllm-openai (linux/amd64 + linux/arm64) for Qwen3.5 MoE tokenizers.
+# Stock image ships transformers<5; AutoTokenizer needs transformers 5.x (KeyError: Qwen3_5MoeConfig).
+#
+# Build (match host arch, e.g. arm64 GH200):
+#   docker build -f Dockerfile.vllm-openai-qwen35 -t vllm-openai-qwen35:latest .
+#
+# Override base tag:
+#   docker build --build-arg VLLM_BASE_IMAGE=vllm/vllm-openai:v0.9.0 ...
+
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai:latest
+FROM ${VLLM_BASE_IMAGE}
+
+USER root
+
+ARG TRANSFORMERS_VERSION=5.5.0
+ARG HUGGINGFACE_HUB_VERSION=1.8.0
+
+# Base image uses distro Python under /usr/local; --break-system-packages avoids PEP 668 blocks on newer Debian/Ubuntu.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --break-system-packages --upgrade --no-deps "transformers==${TRANSFORMERS_VERSION}" \
+    && pip install --break-system-packages \
+    "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
+    "tokenizers>=0.22.0,<=0.23.0" \
+    "regex>=2025.10.22"

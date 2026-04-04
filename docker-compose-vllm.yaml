@@ -1,19 +1,21 @@
 # vLLM + Qwen2.5-32B-Instruct (dense). Works with vLLM 0.8.x / older Transformers.
-# Qwen3.5-35B-A3B (qwen3_5_moe) needs Transformers ~4.57+ and a newer vLLM image than drikster80/gh200 0.8.5.
-# Default image: vllm/vllm-openai (typical x86_64). ARM64 + H100/GH200: docker-compose-vllm-gh200.yaml.
+# Model: https://huggingface.co/Qwen/Qwen2.5-32B-Instruct
+# Qwen3.5-35B-A3B: use docker-compose-vllm-gh200-qwen35-35b.yaml (vllm-openai + Transformers 5 MoE stack).
+# Default image here: vllm/vllm-openai (typical x86_64). ARM64 + H100/GH200: docker-compose-vllm-gh200.yaml.
 # Merge with main stack:
 #   docker compose -f docker-compose.yaml -f docker-compose-vllm.yaml up -d
 # Or vLLM only:
 #   docker compose -f docker-compose-vllm.yaml up -d
-# Optional: HF_TOKEN=... if the hub asks for auth.
+# Repo-root .env (gitignored): HF_TOKEN=... for gated models. Loaded via env_file below.
 
 services:
   model-download:
     image: python:3.12-slim
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./vllm-models:/models
-    environment:
-      - HF_TOKEN=${HF_TOKEN:-}
     command:
       - /bin/sh
       - -c
@@ -32,6 +34,9 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     container_name: vllm
+    env_file:
+      - path: .env
+        required: false
     depends_on:
       model-download:
         condition: service_completed_successfully
@@ -39,7 +44,6 @@ services:
       - ./vllm-models:/models
     environment:
       - HF_HOME=/models/.cache/huggingface
-      - HF_TOKEN=${HF_TOKEN:-}
     ports:
       - "8000:8000"
     ipc: host
@@ -48,7 +52,7 @@ services:
     command:
       - "/models/Qwen2.5-32B-Instruct"
       - "--served-model-name"
-      - "qwen2.5-32b"
+      - "Qwen/Qwen2.5-32B-Instruct"
       - "--host"
       - "0.0.0.0"
       - "--port"
